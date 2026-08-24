@@ -1,0 +1,1850 @@
+Option Strict On
+Option Explicit On
+
+Imports GenericHid.DeviceManagement
+Imports GenericHid.FileIo
+Imports GenericHid.Hid
+Imports Microsoft.Win32.SafeHandles
+Imports System.Runtime.InteropServices
+
+'''<summary>
+''' Project: GenericHid
+''' 
+''' ***********************************************************************
+''' Software License Agreement
+'''
+''' Licensor grants any person obtaining a copy of this software ("You") 
+''' a worldwide, royalty-free, non-exclusive license, for the duration of 
+''' the copyright, free of charge, to store and execute the Software in a 
+''' computer system and to incorporate the Software or any portion of it 
+''' in computer programs You write.   
+''' 
+''' THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+''' IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+''' FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+''' AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+''' LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+''' OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+''' THE SOFTWARE.
+''' ***********************************************************************
+''' 
+''' Author               Date        Version
+''' Jan Axelson          6/16/08      2.4
+''' 
+''' This software was written using Visual Basic 2005 Professional Edition. It requires
+''' the .NET Framework V2.0 or later.
+''' 
+''' Purpose: 
+''' Demonstrates USB communications with a generic HID-class device
+''' 
+''' Requirements:
+''' Windows 98 or later and an attached USB generic Human Interface Device (HID).
+''' 
+''' Description:
+''' Finds an attached device that matches the vendor and product IDs in the form's 
+''' text boxes.
+''' 
+''' Retrieves the device's capabilities.
+''' Sends and requests HID reports.
+''' 
+''' Uses RegisterDeviceNotification() and WM_DEVICE_CHANGE messages
+''' to detect when a device is attached or removed.
+''' RegisterDeviceNotification doesn't work under Windows 98 (not sure why).
+''' 
+''' A list box displays the data sent and received,
+''' along with error and status messages.
+''' Combo boxes select data to send, and 1-time or timed, periodic transfers.
+''' 
+''' You can change the size of the host's Input report buffer and request to use control
+''' transfers only to exchange Input and Output reports.
+''' 
+''' To view additional debugging messages, in the Visual Studio development environment,
+''' select the Debug build (Build > Configuration Manager > Active Solution Configuration)
+''' and view the Output window (View > Other Windows > Output)
+''' 
+''' The application uses a Delegate and the BeginInvoke and EndInvoke methods to read
+''' Input reports asynchronously, so the application's main thread doesn't have to
+''' wait for the device to return an Input report when the HID driver's buffer is empty. 
+''' 
+''' If you want to only receive data or only send data, comment out the unwanted code 
+'''(In ExchangeInputAndOutputReports or ExchangeFeatureReports, comment out
+''' the "Success = " line and the "If Success" block that follows it).
+''' 
+''' This project includes the following modules:
+''' 
+''' GenericHid.vb - runs the application.
+''' FrmMain.vb - routines specific to the form.
+''' Hid.vb - routines specific to HID communications.
+''' DeviceManagement.vb - routines for obtaining a handle to a device from its GUID
+''' and receiving device notifications. This routines are not specific to HIDs.
+''' Debugging.vb - contains a routine for displaying API error messages.
+''' HidDeclarations.vb - Declarations for API functions used by Hid.vb.
+''' FileIODeclarations.vb - Declarations for file-related API functions.
+''' DeviceManagementDeclarations.vb - Declarations for API functions used by DeviceManagement.vb.
+''' DebuggingDeclarations.vb - Declarations for API functions used by Debugging.vb.
+''' 
+''' Companion device firmware for several device CPUs is available from www.Lvr.com/hidpage.htm.
+''' You can use any generic HID (not a system mouse or keyboard) that sends and receives reports.
+''' 
+''' New in V2.4:
+''' To eliminate VB6 "upgrade support" code, added GenericHid.vb file. 
+''' Uses XML comments.
+''' Uses SafeFileHandle and SafeWaitHandle instead of IntPtr in "file" and wait operations.    
+''' The Namespace, Assembly, and Root Namespace are all titled "GenericHid". 
+''' The Solution is titled "GenericHid_vb".
+''' Other minor refinements.
+''' 
+'''New in version 2.3:
+'''In the asychronous ReadFiles, the GetInputReportData callback routine uses marshaling to 
+'''perform actions on the form, which runs in a different thread. 
+'''The marshaling is required by the .NET Framework 2.0. 
+'''I also fixed a few other things that the compiler complained about.
+''' 
+'''New in version 2.2:
+'''The application obtains separate handles for device information/Feature reports,
+'''Input reports, and Output reports. This enables getting information about
+'''mice and keyboards.
+'''The application detects if the device is a mouse or keyboard
+'''and warns that Windows 2000/XP will not allow exchanging Input or Output reports.
+'''The list box's contents are trimmed when they get too large. 
+''' 
+'''For more information about HIDs and USB, and additional example device firmware to use
+'''with this application, visit Lakeview Research at http://www.Lvr.com .
+'''Send comments, bug reports, etc. to redacted@example.com .
+'''This application has been tested under Windows XP and Windows Vista.
+''' </summary>
+
+Friend Class FrmMain
+
+    Inherits System.Windows.Forms.Form
+
+#Region "Windows Form Designer generated code "
+    Public Sub New()
+        MyBase.New()
+
+        'This call is required by the Windows Form Designer.
+        InitializeComponent()
+    End Sub
+    'Form overrides dispose to clean up the component list.
+    Protected Overloads Overrides Sub Dispose(ByVal Disposing As Boolean)
+        If Disposing Then
+            If Not components Is Nothing Then
+                components.Dispose()
+            End If
+        End If
+        MyBase.Dispose(Disposing)
+    End Sub
+    'Required by the Windows Form Designer
+    Private components As System.ComponentModel.IContainer
+    Public ToolTip1 As System.Windows.Forms.ToolTip
+    Public WithEvents tmrContinuousDataCollect As System.Windows.Forms.Timer
+    Public WithEvents cmdContinuous As System.Windows.Forms.Button
+    Public WithEvents cmdOnce As System.Windows.Forms.Button
+    Public WithEvents fraSendAndReceive As System.Windows.Forms.GroupBox
+    Public WithEvents txtBytesReceived As System.Windows.Forms.TextBox
+    Public WithEvents fraBytesReceived As System.Windows.Forms.GroupBox
+    Public WithEvents chkAutoincrement As System.Windows.Forms.CheckBox
+    Public WithEvents cboByte1 As System.Windows.Forms.ComboBox
+    Public WithEvents cboByte0 As System.Windows.Forms.ComboBox
+    Public WithEvents fraBytesToSend As System.Windows.Forms.GroupBox
+    Public WithEvents tmrDelay As System.Windows.Forms.Timer
+    Public WithEvents lstResults As System.Windows.Forms.ListBox
+    'NOTE: The following procedure is required by the Windows Form Designer
+    'It can be modified using the Windows Form Designer.
+    'Do not modify it using the code editor.
+    Friend WithEvents fraReportTypes As System.Windows.Forms.GroupBox
+    Friend WithEvents optInputOutput As System.Windows.Forms.RadioButton
+    Friend WithEvents optFeature As System.Windows.Forms.RadioButton
+    Friend WithEvents fraInputReportBufferSize As System.Windows.Forms.GroupBox
+    Friend WithEvents txtInputReportBufferSize As System.Windows.Forms.TextBox
+    Friend WithEvents cmdInputReportBufferSize As System.Windows.Forms.Button
+    Friend WithEvents fraDeviceIdentifiers As System.Windows.Forms.GroupBox
+    Friend WithEvents lblVendorID As System.Windows.Forms.Label
+    Friend WithEvents txtVendorID As System.Windows.Forms.TextBox
+    Friend WithEvents lblProductID As System.Windows.Forms.Label
+    Friend WithEvents txtProductID As System.Windows.Forms.TextBox
+    Friend WithEvents cmdFindDevice As System.Windows.Forms.Button
+    Friend WithEvents chkUseControlTransfersOnly As System.Windows.Forms.CheckBox
+    <System.Diagnostics.DebuggerStepThrough()> Private Sub InitializeComponent()
+        Me.components = New System.ComponentModel.Container
+        Me.ToolTip1 = New System.Windows.Forms.ToolTip(Me.components)
+        Me.tmrContinuousDataCollect = New System.Windows.Forms.Timer(Me.components)
+        Me.fraSendAndReceive = New System.Windows.Forms.GroupBox
+        Me.cmdContinuous = New System.Windows.Forms.Button
+        Me.cmdOnce = New System.Windows.Forms.Button
+        Me.fraBytesReceived = New System.Windows.Forms.GroupBox
+        Me.txtBytesReceived = New System.Windows.Forms.TextBox
+        Me.fraBytesToSend = New System.Windows.Forms.GroupBox
+        Me.chkAutoincrement = New System.Windows.Forms.CheckBox
+        Me.cboByte1 = New System.Windows.Forms.ComboBox
+        Me.cboByte0 = New System.Windows.Forms.ComboBox
+        Me.tmrDelay = New System.Windows.Forms.Timer(Me.components)
+        Me.lstResults = New System.Windows.Forms.ListBox
+        Me.fraReportTypes = New System.Windows.Forms.GroupBox
+        Me.chkUseControlTransfersOnly = New System.Windows.Forms.CheckBox
+        Me.optFeature = New System.Windows.Forms.RadioButton
+        Me.optInputOutput = New System.Windows.Forms.RadioButton
+        Me.fraInputReportBufferSize = New System.Windows.Forms.GroupBox
+        Me.cmdInputReportBufferSize = New System.Windows.Forms.Button
+        Me.txtInputReportBufferSize = New System.Windows.Forms.TextBox
+        Me.fraDeviceIdentifiers = New System.Windows.Forms.GroupBox
+        Me.txtProductID = New System.Windows.Forms.TextBox
+        Me.lblProductID = New System.Windows.Forms.Label
+        Me.txtVendorID = New System.Windows.Forms.TextBox
+        Me.lblVendorID = New System.Windows.Forms.Label
+        Me.cmdFindDevice = New System.Windows.Forms.Button
+        Me.fraSendAndReceive.SuspendLayout()
+        Me.fraBytesReceived.SuspendLayout()
+        Me.fraBytesToSend.SuspendLayout()
+        Me.fraReportTypes.SuspendLayout()
+        Me.fraInputReportBufferSize.SuspendLayout()
+        Me.fraDeviceIdentifiers.SuspendLayout()
+        Me.SuspendLayout()
+        '
+        'tmrContinuousDataCollect
+        '
+        Me.tmrContinuousDataCollect.Interval = 1
+        '
+        'fraSendAndReceive
+        '
+        Me.fraSendAndReceive.BackColor = System.Drawing.SystemColors.Control
+        Me.fraSendAndReceive.Controls.Add(Me.cmdContinuous)
+        Me.fraSendAndReceive.Controls.Add(Me.cmdOnce)
+        Me.fraSendAndReceive.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.fraSendAndReceive.ForeColor = System.Drawing.SystemColors.ControlText
+        Me.fraSendAndReceive.Location = New System.Drawing.Point(608, 128)
+        Me.fraSendAndReceive.Name = "fraSendAndReceive"
+        Me.fraSendAndReceive.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.fraSendAndReceive.Size = New System.Drawing.Size(176, 136)
+        Me.fraSendAndReceive.TabIndex = 7
+        Me.fraSendAndReceive.TabStop = False
+        Me.fraSendAndReceive.Text = "Send and Receive Data"
+        '
+        'cmdContinuous
+        '
+        Me.cmdContinuous.BackColor = System.Drawing.SystemColors.Control
+        Me.cmdContinuous.Cursor = System.Windows.Forms.Cursors.Default
+        Me.cmdContinuous.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.cmdContinuous.ForeColor = System.Drawing.SystemColors.ControlText
+        Me.cmdContinuous.Location = New System.Drawing.Point(16, 88)
+        Me.cmdContinuous.Name = "cmdContinuous"
+        Me.cmdContinuous.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.cmdContinuous.Size = New System.Drawing.Size(121, 36)
+        Me.cmdContinuous.TabIndex = 9
+        Me.cmdContinuous.Text = "Continuous"
+        Me.cmdContinuous.UseVisualStyleBackColor = False
+        '
+        'cmdOnce
+        '
+        Me.cmdOnce.BackColor = System.Drawing.SystemColors.Control
+        Me.cmdOnce.Cursor = System.Windows.Forms.Cursors.Default
+        Me.cmdOnce.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.cmdOnce.ForeColor = System.Drawing.SystemColors.ControlText
+        Me.cmdOnce.Location = New System.Drawing.Point(16, 32)
+        Me.cmdOnce.Name = "cmdOnce"
+        Me.cmdOnce.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.cmdOnce.Size = New System.Drawing.Size(121, 36)
+        Me.cmdOnce.TabIndex = 8
+        Me.cmdOnce.Text = "Once"
+        Me.cmdOnce.UseVisualStyleBackColor = False
+        '
+        'fraBytesReceived
+        '
+        Me.fraBytesReceived.BackColor = System.Drawing.SystemColors.Control
+        Me.fraBytesReceived.Controls.Add(Me.txtBytesReceived)
+        Me.fraBytesReceived.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.fraBytesReceived.ForeColor = System.Drawing.SystemColors.ControlText
+        Me.fraBytesReceived.Location = New System.Drawing.Point(208, 128)
+        Me.fraBytesReceived.Name = "fraBytesReceived"
+        Me.fraBytesReceived.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.fraBytesReceived.Size = New System.Drawing.Size(128, 136)
+        Me.fraBytesReceived.TabIndex = 4
+        Me.fraBytesReceived.TabStop = False
+        Me.fraBytesReceived.Text = "Bytes Received"
+        '
+        'txtBytesReceived
+        '
+        Me.txtBytesReceived.AcceptsReturn = True
+        Me.txtBytesReceived.BackColor = System.Drawing.SystemColors.Window
+        Me.txtBytesReceived.Cursor = System.Windows.Forms.Cursors.IBeam
+        Me.txtBytesReceived.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.txtBytesReceived.ForeColor = System.Drawing.SystemColors.WindowText
+        Me.txtBytesReceived.Location = New System.Drawing.Point(16, 24)
+        Me.txtBytesReceived.MaxLength = 0
+        Me.txtBytesReceived.Multiline = True
+        Me.txtBytesReceived.Name = "txtBytesReceived"
+        Me.txtBytesReceived.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.txtBytesReceived.Size = New System.Drawing.Size(72, 96)
+        Me.txtBytesReceived.TabIndex = 5
+        '
+        'fraBytesToSend
+        '
+        Me.fraBytesToSend.BackColor = System.Drawing.SystemColors.Control
+        Me.fraBytesToSend.Controls.Add(Me.chkAutoincrement)
+        Me.fraBytesToSend.Controls.Add(Me.cboByte1)
+        Me.fraBytesToSend.Controls.Add(Me.cboByte0)
+        Me.fraBytesToSend.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.fraBytesToSend.ForeColor = System.Drawing.SystemColors.ControlText
+        Me.fraBytesToSend.Location = New System.Drawing.Point(16, 128)
+        Me.fraBytesToSend.Name = "fraBytesToSend"
+        Me.fraBytesToSend.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.fraBytesToSend.Size = New System.Drawing.Size(181, 136)
+        Me.fraBytesToSend.TabIndex = 1
+        Me.fraBytesToSend.TabStop = False
+        Me.fraBytesToSend.Text = "Bytes to Send"
+        '
+        'chkAutoincrement
+        '
+        Me.chkAutoincrement.BackColor = System.Drawing.SystemColors.Control
+        Me.chkAutoincrement.Cursor = System.Windows.Forms.Cursors.Default
+        Me.chkAutoincrement.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.chkAutoincrement.ForeColor = System.Drawing.SystemColors.ControlText
+        Me.chkAutoincrement.Location = New System.Drawing.Point(8, 96)
+        Me.chkAutoincrement.Name = "chkAutoincrement"
+        Me.chkAutoincrement.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.chkAutoincrement.Size = New System.Drawing.Size(201, 35)
+        Me.chkAutoincrement.TabIndex = 6
+        Me.chkAutoincrement.Text = "Autoincrement values"
+        Me.chkAutoincrement.UseVisualStyleBackColor = False
+        '
+        'cboByte1
+        '
+        Me.cboByte1.BackColor = System.Drawing.SystemColors.Window
+        Me.cboByte1.Cursor = System.Windows.Forms.Cursors.Default
+        Me.cboByte1.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        Me.cboByte1.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.cboByte1.ForeColor = System.Drawing.SystemColors.WindowText
+        Me.cboByte1.Location = New System.Drawing.Point(8, 64)
+        Me.cboByte1.Name = "cboByte1"
+        Me.cboByte1.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.cboByte1.Size = New System.Drawing.Size(101, 22)
+        Me.cboByte1.TabIndex = 3
+        '
+        'cboByte0
+        '
+        Me.cboByte0.BackColor = System.Drawing.SystemColors.Window
+        Me.cboByte0.Cursor = System.Windows.Forms.Cursors.Default
+        Me.cboByte0.DropDownStyle = System.Windows.Forms.ComboBoxStyle.DropDownList
+        Me.cboByte0.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.cboByte0.ForeColor = System.Drawing.SystemColors.WindowText
+        Me.cboByte0.Location = New System.Drawing.Point(8, 24)
+        Me.cboByte0.Name = "cboByte0"
+        Me.cboByte0.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.cboByte0.Size = New System.Drawing.Size(101, 22)
+        Me.cboByte0.TabIndex = 2
+        '
+        'tmrDelay
+        '
+        Me.tmrDelay.Interval = 1
+        '
+        'lstResults
+        '
+        Me.lstResults.BackColor = System.Drawing.SystemColors.Window
+        Me.lstResults.Cursor = System.Windows.Forms.Cursors.Default
+        Me.lstResults.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.lstResults.ForeColor = System.Drawing.SystemColors.WindowText
+        Me.lstResults.HorizontalScrollbar = True
+        Me.lstResults.ItemHeight = 14
+        Me.lstResults.Location = New System.Drawing.Point(16, 272)
+        Me.lstResults.Name = "lstResults"
+        Me.lstResults.RightToLeft = System.Windows.Forms.RightToLeft.No
+        Me.lstResults.Size = New System.Drawing.Size(760, 270)
+        Me.lstResults.TabIndex = 0
+        '
+        'fraReportTypes
+        '
+        Me.fraReportTypes.Controls.Add(Me.chkUseControlTransfersOnly)
+        Me.fraReportTypes.Controls.Add(Me.optFeature)
+        Me.fraReportTypes.Controls.Add(Me.optInputOutput)
+        Me.fraReportTypes.Location = New System.Drawing.Point(344, 128)
+        Me.fraReportTypes.Name = "fraReportTypes"
+        Me.fraReportTypes.Size = New System.Drawing.Size(248, 104)
+        Me.fraReportTypes.TabIndex = 8
+        Me.fraReportTypes.TabStop = False
+        Me.fraReportTypes.Text = "Report Options"
+        '
+        'chkUseControlTransfersOnly
+        '
+        Me.chkUseControlTransfersOnly.Location = New System.Drawing.Point(24, 48)
+        Me.chkUseControlTransfersOnly.Name = "chkUseControlTransfersOnly"
+        Me.chkUseControlTransfersOnly.Size = New System.Drawing.Size(200, 24)
+        Me.chkUseControlTransfersOnly.TabIndex = 2
+        Me.chkUseControlTransfersOnly.Text = "Use ControlTransfers Only"
+        '
+        'optFeature
+        '
+        Me.optFeature.Location = New System.Drawing.Point(8, 80)
+        Me.optFeature.Name = "optFeature"
+        Me.optFeature.Size = New System.Drawing.Size(248, 24)
+        Me.optFeature.TabIndex = 1
+        Me.optFeature.Text = "Exchange Feature Reports"
+        '
+        'optInputOutput
+        '
+        Me.optInputOutput.Checked = True
+        Me.optInputOutput.Location = New System.Drawing.Point(8, 24)
+        Me.optInputOutput.Name = "optInputOutput"
+        Me.optInputOutput.Size = New System.Drawing.Size(256, 24)
+        Me.optInputOutput.TabIndex = 0
+        Me.optInputOutput.TabStop = True
+        Me.optInputOutput.Text = "Exchange Input and Output Reports"
+        '
+        'fraInputReportBufferSize
+        '
+        Me.fraInputReportBufferSize.Controls.Add(Me.cmdInputReportBufferSize)
+        Me.fraInputReportBufferSize.Controls.Add(Me.txtInputReportBufferSize)
+        Me.fraInputReportBufferSize.Location = New System.Drawing.Point(248, 16)
+        Me.fraInputReportBufferSize.Name = "fraInputReportBufferSize"
+        Me.fraInputReportBufferSize.Size = New System.Drawing.Size(208, 96)
+        Me.fraInputReportBufferSize.TabIndex = 9
+        Me.fraInputReportBufferSize.TabStop = False
+        Me.fraInputReportBufferSize.Text = "Input Report Buffer Size"
+        '
+        'cmdInputReportBufferSize
+        '
+        Me.cmdInputReportBufferSize.Location = New System.Drawing.Point(96, 32)
+        Me.cmdInputReportBufferSize.Name = "cmdInputReportBufferSize"
+        Me.cmdInputReportBufferSize.Size = New System.Drawing.Size(96, 56)
+        Me.cmdInputReportBufferSize.TabIndex = 1
+        Me.cmdInputReportBufferSize.Text = "Change Buffer Size"
+        '
+        'txtInputReportBufferSize
+        '
+        Me.txtInputReportBufferSize.Location = New System.Drawing.Point(16, 40)
+        Me.txtInputReportBufferSize.Name = "txtInputReportBufferSize"
+        Me.txtInputReportBufferSize.Size = New System.Drawing.Size(56, 20)
+        Me.txtInputReportBufferSize.TabIndex = 0
+        '
+        'fraDeviceIdentifiers
+        '
+        Me.fraDeviceIdentifiers.Controls.Add(Me.txtProductID)
+        Me.fraDeviceIdentifiers.Controls.Add(Me.lblProductID)
+        Me.fraDeviceIdentifiers.Controls.Add(Me.txtVendorID)
+        Me.fraDeviceIdentifiers.Controls.Add(Me.lblVendorID)
+        Me.fraDeviceIdentifiers.Location = New System.Drawing.Point(16, 16)
+        Me.fraDeviceIdentifiers.Name = "fraDeviceIdentifiers"
+        Me.fraDeviceIdentifiers.Size = New System.Drawing.Size(208, 96)
+        Me.fraDeviceIdentifiers.TabIndex = 10
+        Me.fraDeviceIdentifiers.TabStop = False
+        Me.fraDeviceIdentifiers.Text = "Device Identifiers"
+        '
+        'txtProductID
+        '
+        Me.txtProductID.Location = New System.Drawing.Point(120, 56)
+        Me.txtProductID.Name = "txtProductID"
+        Me.txtProductID.Size = New System.Drawing.Size(72, 20)
+        Me.txtProductID.TabIndex = 3
+        Me.txtProductID.Text = "1299"
+        '
+        'lblProductID
+        '
+        Me.lblProductID.Location = New System.Drawing.Point(16, 56)
+        Me.lblProductID.Name = "lblProductID"
+        Me.lblProductID.Size = New System.Drawing.Size(112, 23)
+        Me.lblProductID.TabIndex = 2
+        Me.lblProductID.Text = "Product ID (hex):"
+        '
+        'txtVendorID
+        '
+        Me.txtVendorID.Location = New System.Drawing.Point(120, 24)
+        Me.txtVendorID.Name = "txtVendorID"
+        Me.txtVendorID.Size = New System.Drawing.Size(72, 20)
+        Me.txtVendorID.TabIndex = 1
+        Me.txtVendorID.Text = "0925"
+        '
+        'lblVendorID
+        '
+        Me.lblVendorID.Location = New System.Drawing.Point(16, 24)
+        Me.lblVendorID.Name = "lblVendorID"
+        Me.lblVendorID.Size = New System.Drawing.Size(112, 23)
+        Me.lblVendorID.TabIndex = 0
+        Me.lblVendorID.Text = "Vendor ID (hex):"
+        '
+        'cmdFindDevice
+        '
+        Me.cmdFindDevice.Location = New System.Drawing.Point(464, 48)
+        Me.cmdFindDevice.Name = "cmdFindDevice"
+        Me.cmdFindDevice.Size = New System.Drawing.Size(136, 40)
+        Me.cmdFindDevice.TabIndex = 11
+        Me.cmdFindDevice.Text = "Find My Device"
+        '
+        'FrmMain
+        '
+        Me.ClientSize = New System.Drawing.Size(792, 557)
+        Me.Controls.Add(Me.cmdFindDevice)
+        Me.Controls.Add(Me.fraDeviceIdentifiers)
+        Me.Controls.Add(Me.fraInputReportBufferSize)
+        Me.Controls.Add(Me.fraReportTypes)
+        Me.Controls.Add(Me.fraSendAndReceive)
+        Me.Controls.Add(Me.fraBytesReceived)
+        Me.Controls.Add(Me.fraBytesToSend)
+        Me.Controls.Add(Me.lstResults)
+        Me.Font = New System.Drawing.Font("Arial", 8.0!, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Point, CType(0, Byte))
+        Me.Location = New System.Drawing.Point(21, 28)
+        Me.Name = "FrmMain"
+        Me.StartPosition = System.Windows.Forms.FormStartPosition.Manual
+        Me.Text = "Generic HID Tester"
+        Me.fraSendAndReceive.ResumeLayout(False)
+        Me.fraBytesReceived.ResumeLayout(False)
+        Me.fraBytesReceived.PerformLayout()
+        Me.fraBytesToSend.ResumeLayout(False)
+        Me.fraReportTypes.ResumeLayout(False)
+        Me.fraInputReportBufferSize.ResumeLayout(False)
+        Me.fraInputReportBufferSize.PerformLayout()
+        Me.fraDeviceIdentifiers.ResumeLayout(False)
+        Me.fraDeviceIdentifiers.PerformLayout()
+        Me.ResumeLayout(False)
+
+    End Sub
+#End Region
+
+    Private deviceNotificationHandle As IntPtr
+    Private exclusiveAccess As Boolean
+    Private hidHandle As SafeFileHandle
+    Private hidUsage As String
+    Private myDeviceDetected As Boolean
+    Private myDevicePathName As String
+    Private readHandle As SafeFileHandle
+    Private writeHandle As SafeFileHandle
+
+    Private MyDebugging As New Debugging() ' For viewing results of API calls via Debug.Write.
+    Private MyDeviceManagement As New DeviceManagement()
+    Private MyHid As New Hid()
+
+    Friend FrmMy As FrmMain
+
+    ''' <summary>
+    ''' Define a class of delegates that point to the Hid.ReportIn.Read function.
+    ''' The delegate has the same parameters as Hid.ReportIn.Read.
+    ''' Used for asynchronous reads from the device.       
+    ''' </summary>
+
+    Private Delegate Sub ReadInputReportDelegate _
+        (ByVal hidHandle As SafeFileHandle, _
+        ByVal readHandle As SafeFileHandle, _
+        ByVal writeHandle As SafeFileHandle, _
+        ByRef myDeviceDetected As Boolean, _
+        ByRef readBuffer() As Byte, _
+        ByRef success As Boolean)
+
+    ' This delegate has the same parameters as AccessForm.
+    ' Used in accessing the application's form from a different thread.
+
+    Private Delegate Sub MarshalToForm _
+        (ByVal action As String, _
+        ByVal textToAdd As String)
+
+    ''' <summary>
+    ''' Called when a WM_DEVICECHANGE message has arrived,
+    ''' indicating that a device has been attached or removed.
+    ''' </summary>
+    ''' 
+    ''' <param name="m"> a message with information about the device </param>
+    Friend Sub OnDeviceChange(ByVal m As Message)
+
+        Debug.WriteLine("WM_DEVICECHANGE")
+
+        Try
+            If (m.WParam.ToInt32 = DBT_DEVICEARRIVAL) Then
+
+                ' If WParam contains DBT_DEVICEARRIVAL, a device has been attached.
+
+                Debug.WriteLine("A device has been attached.")
+
+                ' Find out if it's the device we're communicating with.
+
+                If MyDeviceManagement.DeviceNameMatch(m, myDevicePathName) Then
+                    lstResults.Items.Add("My device attached.")
+                End If
+
+            ElseIf (m.WParam.ToInt32 = DBT_DEVICEREMOVECOMPLETE) Then
+
+                ' If WParam contains DBT_DEVICEREMOVAL, a device has been removed.
+
+                Debug.WriteLine("A device has been removed.")
+
+                ' Find out if it's the device we're communicating with.
+
+                If MyDeviceManagement.DeviceNameMatch(m, myDevicePathName) Then
+
+                    lstResults.Items.Add("My device removed.")
+
+                    ' Set MyDeviceDetected False so on the next data-transfer attempt,
+                    ' FindTheHid() will be called to look for the device 
+                    ' and get a new handle.
+
+                    FrmMy.myDeviceDetected = False
+                End If
+            End If
+
+            ScrollToBottomOfListBox()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Uses a series of API calls to locate a HID-class device
+    ''' by its Vendor ID and Product ID.
+    ''' </summary>
+    '''         
+    ''' <returns>
+    '''  True if the device is detected, False if not detected.
+    ''' </returns>
+    Private Function FindTheHid() As Boolean
+
+        Dim deviceFound As Boolean
+        Dim devicePathName(127) As String
+        Dim hidGuid As System.Guid =REDACTED
+        Dim memberIndex As Int32
+        Dim myProductID As Int16
+        Dim myVendorID As Int16
+        Dim success As Boolean
+
+        Try
+            myDeviceDetected = False
+
+            ' Get the device's Vendor ID and Product ID from the form's text boxes.
+
+            GetVendorAndProductIDsFromTextBoxes(myVendorID, myProductID)
+
+            ' ***
+            ' API function: 'HidD_GetHidGuid
+
+            ' Purpose: Retrieves the interface class GUID for the HID class.
+
+            ' Accepts: 'A System.Guid object for storing the GUID.
+            ' ***
+
+            HidD_GetHidGuid(hidGuid)
+
+            Debug.WriteLine(MyDebugging.ResultOfAPICall("GetHidGuid"))
+            Debug.WriteLine("  GUID for system HIDs: " & hidGuid.ToString)
+
+            ' Fill an array with the device path names of all attached HIDs.
+
+            deviceFound = MyDeviceManagement.FindDeviceFromGuid _
+                (hidGuid, _
+                devicePathName)
+
+            ' If there is at least one HID, attempt to read the Vendor ID and Product ID
+            ' of each device until there is a match or all devices have been examined.
+
+            If deviceFound Then
+
+                memberIndex = 0
+
+                Do
+                    ' ***
+                    ' API function:
+                    ' CreateFile
+
+                    ' Purpose:
+                    ' Retrieves a handle to a device.
+
+                    ' Accepts:
+                    ' A device path name returned by SetupDiGetDeviceInterfaceDetail
+                    ' The type of access requested (read/write).
+                    ' FILE_SHARE attributes to allow other processes to access the device while this handle is open.
+                    ' A Security structure or Nothing. 
+                    ' A creation disposition value. Use OPEN_EXISTING for devices.
+                    ' Flags and attributes for files. Not used for devices.
+                    ' Handle to a template file. Not used.
+
+                    ' Returns: a handle without read or write access.
+                    ' This enables obtaining information about all HIDs, even system
+                    ' keyboards and mice. 
+                    ' Separate handles are used for reading and writing.
+                    ' ***
+
+                    hidHandle = CreateFile _
+                        (devicePathName(memberIndex), _
+                        0, _
+                        FILE_SHARE_READ Or FILE_SHARE_WRITE, _
+                        Nothing, _
+                        OPEN_EXISTING, _
+                        0, _
+                        0)
+
+                    Debug.WriteLine(MyDebugging.ResultOfAPICall("CreateFile"))
+                    Debug.WriteLine("  Returned handle: " & hidHandle.ToString)
+
+                    If Not (hidHandle.IsInvalid) Then
+
+                        ' The returned handle is valid, 
+                        ' so find out if this is the device we're looking for.
+
+                        ' Set the Size property of DeviceAttributes to the number of bytes in the structure.
+
+                        MyHid.DeviceAttributes.Size = Marshal.SizeOf(MyHid.DeviceAttributes)
+
+                        ' ***
+                        ' API function:
+                        ' HidD_GetAttributes
+
+                        ' Purpose:
+                        ' Retrieves a HIDD_ATTRIBUTES structure containing the Vendor ID, 
+                        ' Product ID, and Product Version Number for a device.
+
+                        ' Accepts:
+                        ' A handle returned by CreateFile.
+                        ' A pointer to receive a HIDD_ATTRIBUTES structure.
+
+                        ' Returns:
+                        ' True on success, False on failure.
+                        ' ***
+
+                        success = HidD_GetAttributes(hidHandle, MyHid.DeviceAttributes)
+
+                        If success Then
+
+                            Debug.WriteLine("  HIDD_ATTRIBUTES structure filled without error.")
+                            Debug.WriteLine("  Structure size: " & MyHid.DeviceAttributes.Size)
+                            Debug.WriteLine("  Vendor ID: " & Hex(MyHid.DeviceAttributes.VendorID))
+                            Debug.WriteLine("  Product ID: " & Hex(MyHid.DeviceAttributes.ProductID))
+                            Debug.WriteLine("  Version Number: " & Hex(MyHid.DeviceAttributes.VersionNumber))
+
+                            ' Find out if the device matches the one we're looking for.
+
+                            If (MyHid.DeviceAttributes.VendorID = myVendorID) And _
+                                (MyHid.DeviceAttributes.ProductID = myProductID) Then
+
+                                Debug.WriteLine("  My device detected")
+
+                                ' Display the information in form's list box.
+
+                                lstResults.Items.Add("Device detected:")
+                                lstResults.Items.Add("  Vendor ID= " & Hex(MyHid.DeviceAttributes.VendorID))
+                                lstResults.Items.Add("  Product ID = " & Hex(MyHid.DeviceAttributes.ProductID))
+
+                                ScrollToBottomOfListBox()
+
+                                myDeviceDetected = True
+
+                                ' Save the DevicePathName for OnDeviceChange().
+
+                                myDevicePathName = devicePathName(memberIndex)
+                            Else
+
+                                ' It's not a match, so close the handle.
+
+                                myDeviceDetected = False
+
+                                hidHandle.Close()
+
+                            End If
+
+                        Else
+                            ' There was a problem in retrieving the information.
+
+                            Debug.WriteLine("  Error in filling HIDD_ATTRIBUTES structure.")
+                            myDeviceDetected = False
+                            hidHandle.Close()
+                        End If
+
+                    End If
+
+                    ' Keep looking until we find the device or there are no devices left to examine.
+
+                    memberIndex = memberIndex + 1
+
+                Loop Until (myDeviceDetected Or (memberIndex = devicePathName.Length))
+
+            End If
+
+            If myDeviceDetected Then
+
+                ' The device was detected.
+                ' Register to receive notifications if the device is removed or attached.
+
+                success = MyDeviceManagement.RegisterForDeviceNotifications _
+                    (myDevicePathName, _
+                    FrmMy.Handle, _
+                    hidGuid, _
+                    deviceNotificationHandle)
+
+                Debug.WriteLine("RegisterForDeviceNotifications = " & success)
+
+                ' Learn the capabilities of the device.
+
+                MyHid.Capabilities = MyHid.GetDeviceCapabilities(hidHandle)
+
+                If success Then
+
+                    ' Find out if the device is a system mouse or keyboard.
+
+                    hidUsage = MyHid.GetHidUsage(MyHid.Capabilities)
+
+                    ' Get the Input report buffer size.
+
+                    GetInputReportBufferSize()
+                    cmdInputReportBufferSize.Enabled = True
+
+                    ' Get handles to use in requesting Input and Output reports.
+
+                    readHandle = CreateFile _
+                        (myDevicePathName, _
+                        GENERIC_READ, _
+                        FILE_SHARE_READ Or FILE_SHARE_WRITE, _
+                        Nothing, _
+                        OPEN_EXISTING, _
+                        FILE_FLAG_OVERLAPPED, _
+                        0)
+
+                    Debug.WriteLine(MyDebugging.ResultOfAPICall("CreateFile, ReadHandle"))
+                    Debug.WriteLine("  Returned handle: " & readHandle.ToString)
+
+                    If readHandle.IsInvalid Then
+
+                        exclusiveAccess = True
+                        lstResults.Items.Add("The device is a system " + hidUsage + ".")
+                        lstResults.Items.Add("Windows 2000 and Windows XP obtain exclusive access to Input and Output reports for this devices.")
+                        lstResults.Items.Add("Applications can access Feature reports only.")
+                        ScrollToBottomOfListBox()
+
+                    Else
+                        writeHandle = CreateFile _
+                             (myDevicePathName, _
+                             GENERIC_WRITE, _
+                             FILE_SHARE_READ Or FILE_SHARE_WRITE, _
+                             Nothing, _
+                             OPEN_EXISTING, _
+                             0, _
+                             0)
+
+                        Debug.WriteLine(MyDebugging.ResultOfAPICall("CreateFile, WriteHandle"))
+                        Debug.WriteLine("  Returned handle: " & writeHandle.ToString)
+
+                        ' Flush any waiting reports in the input buffer. (optional)
+
+                        MyHid.FlushQueue(readHandle)
+
+                    End If
+                End If
+            Else
+                ' The device wasn't detected.
+
+                lstResults.Items.Add("Device not found.")
+                cmdInputReportBufferSize.Enabled = False
+                cmdOnce.Enabled = True
+
+                Debug.WriteLine(" Device not found.")
+
+                ScrollToBottomOfListBox()
+            End If
+
+            Return myDeviceDetected
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Function
+
+    ''' <summary>
+    ''' In asynchronous ReadFiles, the callback function GetInputReportData
+    ''' uses this routine to access the application's form, which runs in 
+    ''' a different thread.
+    ''' The routine performs various application-specific functions that
+    ''' involve accessing the application's form.
+    ''' </summary>
+    ''' 
+    ''' <param name="action"> a string that names the action to perform on the form</param>
+    ''' <param name="formText"> text that the form displays or the code uses for 
+    ''' another purpose. Actions that don't use text ignore this parameter. </param>
+    Private Sub AccessForm(ByVal action As String, ByVal formText As String)
+
+        Try
+            ' Select an action to perform on the form:
+
+            Select Case action
+
+                Case "AddItemToListBox"
+
+                    lstResults.Items.Add(formText)
+
+                Case "AddItemToTextBox"
+
+                    txtBytesReceived.SelectedText = formText & vbCrLf
+
+                Case "EnableCmdOnce"
+
+                    ' If it's a single transfer, re-enable the command button.
+
+                    If cmdContinuous.Text = "Continuous" Then
+                        cmdOnce.Enabled = True
+                    End If
+
+                Case "ScrollToBottomOfListBox"
+
+                    lstResults.SelectedIndex = lstResults.Items.Count - 1
+
+                Case "TextBoxSelectionStart"
+
+                    txtBytesReceived.SelectionStart = Len(formText)
+
+                Case Else
+
+            End Select
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Start or stop a series of periodic transfers.
+    ''' </summary>
+    Private Sub cmdContinuous_Click(ByVal eventSender As System.Object, ByVal eventArgs As System.EventArgs) Handles cmdContinuous.Click
+
+        Try
+            If cmdContinuous.Text = "Continuous" Then
+
+                ' Start doing periodic transfers.
+
+                If Not cmdOnce.Enabled Then
+
+                    AccessForm("AddItemToListBox", "A previous transfer hasn't completed. Please try again.")
+                Else
+
+                    cmdOnce.Enabled = False
+
+                    ' Change the command button's text to "Cancel Continuous"
+
+                    cmdContinuous.Text = "Cancel Continuous"
+
+                    ' Enable the timer event to trigger a set of transfers.
+
+                    tmrContinuousDataCollect.Enabled = True
+                    ReadAndWriteToDevice()
+                End If
+
+            Else
+
+                ' Stop doing continuous transfers.
+                ' Change the command button's text to "Continuous"
+
+                cmdContinuous.Text = "Continuous"
+
+                'D isable the timer that triggers the transfers.
+
+                tmrContinuousDataCollect.Enabled = False
+
+                cmdOnce.Enabled = True
+            End If
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Set the number of Input reports the host will store.
+    ''' </summary>
+    Private Sub cmdInputReportBufferSize_Click(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles cmdInputReportBufferSize.Click
+
+        Try
+            SetInputReportBufferSize()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Search for a specific device.
+    ''' </summary>
+    Private Sub cmdFindDevice_Click(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles cmdFindDevice.Click
+
+        Try
+            FindTheHid()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Attempt to write a report and read a report.
+    ''' </summary>
+    ''' 
+    Private Sub cmdOnce_Click(ByVal eventSender As System.Object, ByVal eventArgs As System.EventArgs) Handles cmdOnce.Click
+
+        Try
+            ' Don't allow another transfer request until this one completes.
+            ' Move the focus away from cmdOnce to prevent the focus from 
+            ' switching to the next control in the tab order on disabling the button.
+
+            fraSendAndReceive.Focus()
+            cmdOnce.Enabled = False
+
+            ReadAndWriteToDevice()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Called if the user changes the Vendor ID or Product ID in the text box.
+    ''' </summary>
+    ''' 
+    Private Sub DeviceHasChanged()
+
+        Try
+            ' If a device was previously detected, stop receiving notifications about it.
+
+            If myDeviceDetected Then
+                MyDeviceManagement.StopReceivingDeviceNotifications(deviceNotificationHandle)
+            End If
+
+            ' Search for the device the next time FindTheHid is called.
+
+            myDeviceDetected = False
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Sends a Feature report, then retrieves one.
+    ''' Assumes report ID = 0 for both reports.
+    ''' </summary>
+    Private Sub ExchangeFeatureReports()
+
+        Dim byteValue As String
+        Dim count As Int32
+        Dim inFeatureReportBuffer() As Byte
+        Dim outFeatureReportBuffer() As Byte
+        Dim success As Boolean
+
+        Try
+            Dim myInFeatureReport As New Hid.InFeatureReport()
+            Dim myOutFeatureReport As New Hid.OutFeatureReport()
+
+            inFeatureReportBuffer = Nothing
+
+            If (MyHid.Capabilities.FeatureReportByteLength > 0) Then
+
+                ' The HID has a Feature report.
+
+                ' Set the size of the Feature report buffer. 
+                ' Subtract 1 from the value in the Capabilities structure because 
+                ' the array begins at index 0.
+
+                ReDim outFeatureReportBuffer(MyHid.Capabilities.FeatureReportByteLength - 1)
+
+                ' Store the report ID in the buffer:
+
+                outFeatureReportBuffer(0) = 0
+
+                ' Store the report data following the report ID.
+                ' Use the data in the combo boxes on the form.
+
+                outFeatureReportBuffer(1) = Convert.ToByte(cboByte0.SelectedIndex)
+
+                If UBound(outFeatureReportBuffer) > 1 Then
+                    outFeatureReportBuffer(2) = Convert.ToByte(cboByte1.SelectedIndex)
+                End If
+
+                ' Write a report to the device
+
+                success = myOutFeatureReport.Write(outFeatureReportBuffer, hidHandle)
+
+                If success Then
+                    lstResults.Items.Add("A Feature report has been written.")
+
+                    ' Display the report data sent in the form's list box.
+
+                    lstResults.Items.Add(" Feature Report ID: " & String.Format("{0:X2} ", outFeatureReportBuffer(0)))
+                    lstResults.Items.Add(" Feature Report Data:")
+
+                    For count = 1 To UBound(outFeatureReportBuffer)
+
+                        ' Display bytes as 2-character Hex strings.
+
+                        byteValue = String.Format("{0:X2} ", outFeatureReportBuffer(count))
+
+                        lstResults.Items.Add(" " & byteValue)
+
+                    Next count
+                Else
+                    lstResults.Items.Add("The attempt to write a Feature report failed.")
+                End If
+
+                ' Read a report from the device.
+
+                ' Set the size of the Feature report buffer. 
+                ' Subtract 1 from the value in the Capabilities structure because 
+                ' the array begins at index 0.
+
+                If (MyHid.Capabilities.FeatureReportByteLength > 0) Then
+                    ReDim inFeatureReportBuffer(MyHid.Capabilities.FeatureReportByteLength - 1)
+                End If
+
+                ' Read a report.
+
+                myInFeatureReport.Read _
+                    (hidHandle, _
+                    readHandle, _
+                    writeHandle, _
+                    myDeviceDetected, _
+                    inFeatureReportBuffer, _
+                    success)
+
+                If success Then
+                    lstResults.Items.Add("A Feature report has been read.")
+                   
+                    ' Display the report data received in the form's list box.
+
+                    lstResults.Items.Add(" Feature Report ID: " & String.Format("{0:X2} ", inFeatureReportBuffer(0)))
+                    lstResults.Items.Add(" Feature Report Data:")
+                    txtBytesReceived.Text = ""
+
+                    For count = 1 To UBound(inFeatureReportBuffer)
+
+                        ' Display bytes as 2-character Hex strings.
+
+                        byteValue = String.Format("{0:X2} ", inFeatureReportBuffer(count))
+
+                        lstResults.Items.Add(" " & byteValue)
+
+                        ' Display the received bytes in the text box.
+
+                        txtBytesReceived.SelectionStart = Len(txtBytesReceived.Text)
+                        txtBytesReceived.SelectedText = byteValue & vbCrLf
+
+                    Next count
+                Else
+                    lstResults.Items.Add("The attempt to read a Feature report failed.")
+                End If
+
+            Else
+                lstResults.Items.Add("The HID doesn't have a Feature report.")
+            End If
+
+            ScrollToBottomOfListBox()
+
+            cmdOnce.Enabled = True
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Sends an Output report, then retrieves an Input report.
+    ''' Assumes report ID = 0 for both reports.
+    ''' </summary>
+    Private Sub ExchangeInputAndOutputReports()
+
+        Dim byteValue As String
+        Dim count As Int32
+        Dim inputReportBuffer() As Byte
+        Dim outputReportBuffer() As Byte
+        Dim success As Boolean
+
+        Try
+            success = False
+
+            ' Don't attempt to exchange reports if valid handles aren't available
+            ' (as for a mouse or keyboard under Windows 2000/XP.)
+
+            If (Not (readHandle.IsInvalid) And (Not writeHandle.IsInvalid)) Then
+                ' Don't attempt to send an Output report if the HID has no Output report.
+                If (MyHid.Capabilities.OutputReportByteLength > 0) Then
+                    ' Set the size of the Output report buffer. 
+                    ' Subtract 1 from the value in the Capabilities structure because 
+                    ' the array begins at index 0.
+                    ReDim outputReportBuffer(MyHid.Capabilities.OutputReportByteLength - 1)
+
+                    ' Store the report ID in the first byte of the buffer:
+                    outputReportBuffer(0) = 0
+                    ' Store the report data following the report ID.
+                    ' Use the data in the combo boxes on the form.
+                    outputReportBuffer(1) = Convert.ToByte(cboByte0.SelectedIndex)
+                    If UBound(outputReportBuffer) > 1 Then
+                        outputReportBuffer(2) = Convert.ToByte(cboByte1.SelectedIndex)
+                    End If
+
+                    ' Write a report.
+                    If (chkUseControlTransfersOnly.Checked) = True Then
+                        ' Use a control transfer to send the report,
+                        ' even if the HID has an interrupt OUT endpoint.
+                        Dim myOutputReport As New Hid.OutputReportViaControlTransfer
+                        success = myOutputReport.Write(outputReportBuffer, writeHandle)
+                    Else
+
+                        ' Use WriteFile to send the report.
+                        ' If the HID has an interrupt OUT endpoint, WriteFile uses an 
+                        ' interrupt transfer to send the report. 
+                        ' If not, WriteFile uses a control transfer.
+
+                        Dim myOutputReport As New Hid.OutputReportViaInterruptTransfer
+                        success = myOutputReport.Write(outputReportBuffer, writeHandle)
+                    End If
+
+
+                    If success Then
+                        lstResults.Items.Add("An Output report has been written.")
+
+                        ' Display the report data in the form's list box.
+
+                        lstResults.Items.Add(" Output Report ID: " & String.Format("{0:X2} ", outputReportBuffer(0)))
+                        lstResults.Items.Add(" Output Report Data:")
+
+                        txtBytesReceived.Text = ""
+                        For count = 1 To UBound(outputReportBuffer)
+
+                            ' Display bytes as 2-character hex strings.
+
+                            byteValue = String.Format("{0:X2} ", outputReportBuffer(count))
+                            lstResults.Items.Add(" " & byteValue)
+
+                        Next count
+
+                    Else
+                        lstResults.Items.Add("The attempt to write an Output report has failed.")
+                    End If
+
+                Else
+                    lstResults.Items.Add("The HID doesn't have an Output report.")
+                End If
+
+                ' Read an Input report.
+
+                success = False
+
+                ' Don't attempt to send an Input report if the HID has no Input report.
+                ' (The HID spec requires all HIDs to have an interrupt IN endpoint,
+                ' which suggests that all HIDs must support Input reports.)
+
+                If (MyHid.Capabilities.InputReportByteLength > 0) Then
+
+                    ' Set the size of the Input report buffer. 
+                    ' Subtract 1 from the value in the Capabilities structure because 
+                    ' the array begins at index 0.
+
+                    ReDim inputReportBuffer(MyHid.Capabilities.InputReportByteLength - 1)
+
+                    If (chkUseControlTransfersOnly.Checked = True) Then
+
+                        ' Read a report using a control transfer.
+
+                        Dim myInputReport As New Hid.InputReportViaControlTransfer
+
+                        ' Read the report.
+
+                        myInputReport.Read _
+                            (hidHandle, _
+                            readHandle, _
+                            writeHandle, _
+                            myDeviceDetected, _
+                            inputReportBuffer, _
+                            success)
+
+                        If success Then
+                            lstResults.Items.Add("An Input report has been read.")
+
+                            ' Display the report data received in the form's list box.
+
+                            lstResults.Items.Add(" Input Report ID: " & String.Format("{0:X2} ", inputReportBuffer(0)))
+                            lstResults.Items.Add(" Input Report Data:")
+
+                            txtBytesReceived.Text = ""
+                            For count = 1 To UBound(inputReportBuffer)
+
+                                ' Display bytes as 2-character Hex strings.
+
+                                byteValue = String.Format("{0:X2} ", inputReportBuffer(count))
+
+                                lstResults.Items.Add(" " & byteValue)
+
+                                ' Display the received bytes in the text box.
+
+                                txtBytesReceived.SelectionStart = Len(txtBytesReceived.Text)
+                                txtBytesReceived.SelectedText = byteValue & vbCrLf
+                            Next count
+                        Else
+                            lstResults.Items.Add("The attempt to read an Input report has failed.")
+
+                        End If
+
+                        ScrollToBottomOfListBox()
+
+                        ' Enable requesting another transfer.
+
+                        AccessForm("EnableCmdOnce", "")
+
+                    Else
+                        ' Read a report using interrupt transfers.                
+                        ' To enable reading a report without blocking the main thread, this
+                        ' application uses an asynchronous delegate.
+
+                        Dim ar As IAsyncResult
+                        Dim myInputReport As New Hid.InputReportViaInterruptTransfer
+
+                        ' Define a delegate for the Read method of myInputReport.
+
+                        Dim MyReadInputReportDelegate As _
+                            New ReadInputReportDelegate(AddressOf myInputReport.Read)
+
+                        ' The BeginInvoke method calls myInputReport.Read to attempt to read a report.
+                        ' The method has the same parameters as the Read function,
+                        ' plus two additional parameters:
+                        ' GetInputReportData is the callback procedure that executes when the Read function returns.
+                        ' MyReadInputReportDelegate is the asynchronous delegate object.
+                        ' The last parameter can optionally be an object passed to the callback.
+
+                        ar = MyReadInputReportDelegate.BeginInvoke _
+                            (hidHandle, _
+                            readHandle, _
+                            writeHandle, _
+                            myDeviceDetected, _
+                            inputReportBuffer, _
+                            success, _
+                            New AsyncCallback(AddressOf GetInputReportData), _
+                            MyReadInputReportDelegate)
+                    End If
+
+                Else
+                    lstResults.Items.Add("No attempt to read an Input report was made.")
+                    lstResults.Items.Add("The HID doesn't have an Input report.")
+                End If
+            Else
+                lstResults.Items.Add("Invalid handle. The device is probably a system mouse or keyboard.")
+                lstResults.Items.Add("No attempt to write an Output report or read an Input report was made.")
+
+            End If
+
+            ScrollToBottomOfListBox()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Perform shutdown operations.
+    ''' </summary>
+    Private Sub frmMain_Closed(ByVal eventSender As System.Object, ByVal eventArgs As System.EventArgs) Handles MyBase.Closed
+
+        Try
+            Shutdown()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Perform startup operations.
+    ''' </summary>
+    Private Sub frmMain_Load(ByVal eventSender As System.Object, ByVal eventArgs As System.EventArgs) Handles MyBase.Load
+
+        Try
+            FrmMy = Me
+            Startup()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Finds and displays the number of Input buffers
+    ''' (the number of Input reports the host will store). 
+    ''' </summary>
+    Private Sub GetInputReportBufferSize()
+
+        Dim numberOfInputBuffers As Int32
+
+        Try
+            ' Get the number of input buffers.
+
+            MyHid.GetNumberOfInputBuffers _
+                (hidHandle, _
+                numberOfInputBuffers)
+
+            ' Display the result in the text box.
+
+            txtInputReportBufferSize.Text = CStr(numberOfInputBuffers)
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Retrieves Input report data and status information.
+    ''' This routine is called automatically when myInputReport.Read
+    ''' returns. Calls several marshaling routines to access the main form.
+    ''' </summary>
+    ''' 
+    ''' <param name="ar"> an object containing status information about 
+    ''' the asynchronous operation. </param>
+    Private Sub GetInputReportData(ByVal ar As IAsyncResult)
+
+        Dim byteValue As String
+        Dim count As Int32
+        Dim inputReportBuffer As Byte() = Nothing
+        Dim success As Boolean
+
+        Try
+            'Define a delegate using the IAsyncResult object.
+
+            Dim deleg As ReadInputReportDelegate = _
+                DirectCast(ar.AsyncState, ReadInputReportDelegate)
+
+            ' Get the IAsyncResult object and the values of other paramaters that the
+            ' BeginInvoke method passed ByRef.
+
+            deleg.EndInvoke(myDeviceDetected, inputReportBuffer, success, ar)
+
+            ' Display the received report data in the form's list box.
+
+            If (ar.IsCompleted And success) Then
+
+                MyMarshalToForm("AddItemToListBox", "An Input report has been read.")
+
+                MyMarshalToForm("AddItemToListBox", " Input Report ID: " & String.Format("{0:X2} ", inputReportBuffer(0)))
+
+                MyMarshalToForm("AddItemToListBox", " Input Report Data:")
+
+                For count = 1 To UBound(inputReportBuffer)
+
+                    ' Display bytes as 2-character Hex strings.
+
+                    byteValue = String.Format("{0:X2} ", inputReportBuffer(count))
+
+                    MyMarshalToForm("AddItemToListBox", " " & byteValue)
+                    MyMarshalToForm("TextBoxSelectionStart", txtBytesReceived.Text)
+                    MyMarshalToForm("AddItemToTextBox", byteValue)
+
+                Next count
+
+            Else
+                MyMarshalToForm("AddItemToListBox", "The attempt to read an Input report has failed.")
+                Debug.Write("The attempt to read an Input report has failed")
+            End If
+
+            MyMarshalToForm("ScrollToBottomOfListBox", "")
+
+            ' Enable requesting another transfer.
+
+            MyMarshalToForm("EnableCmdOnce", "")
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Retrieves a Vendor ID and Product ID in hexadecimal 
+    ''' from the form's text boxes and converts the text to Int16s.
+    ''' </summary>
+    ''' 
+    ''' <param name="myVendorID"> the Vendor ID as a Int16.</param>
+    ''' <param name="myProductID"> the Product ID as a Int16. </param>
+    Private Sub GetVendorAndProductIDsFromTextBoxes _
+        (ByRef myVendorID As Int16, _
+        ByRef myProductID As Int16)
+
+        Try
+            myVendorID = Convert.ToInt16(Val("&h" & txtVendorID.Text))
+            myProductID = Convert.ToInt16(Val("&h" & txtProductID.Text))
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Initialize the elements on the form.
+    ''' </summary>
+    ''' 
+    Private Sub InitializeDisplay()
+
+        Dim count As Int16
+        Dim byteValue As String
+
+        Try
+            ' Create a dropdown list box for each byte to send in a report.
+            ' Display the values as 2-character hex strings.
+
+            For count = 0 To 255
+
+                byteValue = String.Format("{0:X2} ", count)
+                FrmMy.cboByte0.Items.Insert(count, byteValue)
+                FrmMy.cboByte1.Items.Insert(count, byteValue)
+
+            Next count
+
+            ' Select a default value for each box
+
+            FrmMy.cboByte0.SelectedIndex = 0
+            FrmMy.cboByte1.SelectedIndex = 128
+
+            ' Check the autoincrement box to increment the values each time a report is sent.
+
+            chkAutoincrement.CheckState = System.Windows.Forms.CheckState.Checked
+
+            ' Don't allow the user to select an input report buffer size until there is
+            ' a handle to a HID.
+
+            cmdInputReportBufferSize.Focus()
+            cmdInputReportBufferSize.Enabled = False
+
+            If MyHid.IsWindowsXpOrLater() Then
+
+                chkUseControlTransfersOnly.Enabled = True
+
+            Else
+                ' If the operating system is earlier than Windows XP,
+                ' disable the option to force Input and Output reports to use control transfers.
+
+                chkUseControlTransfersOnly.Enabled = False
+
+            End If
+
+            lstResults.Items.Add("For a more detailed event log, view debug statements in Visual Studio's Output window:")
+            lstResults.Items.Add("Click Build > Configuration Manager > Active Solution Configuration > Debug > Close.")
+            lstResults.Items.Add("Then click View > Output.")
+            lstResults.Items.Add("")
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Enables accessing a form's controls from another thread 
+    ''' </summary>
+    ''' 
+    ''' <param name="action"> a string that names the action to perform on the form </param>
+    ''' <param name="textToDisplay"> text that the form displays or the code uses for 
+    ''' another purpose. Actions that don't use text ignore this parameter.  </param>
+    Private Sub MyMarshalToForm _
+        (ByVal action As String, _
+        ByVal textToDisplay As String)
+
+        Dim args() As Object = {action, textToDisplay}
+        Dim MarshalToFormDelegate As MarshalToForm
+
+        ' The AccessForm routine contains the code that accesses the form.
+
+        MarshalToFormDelegate = New MarshalToForm(AddressOf AccessForm)
+
+        ' Execute AccessForm, passing the parameters in args.
+
+        MyBase.Invoke(MarshalToFormDelegate, args)
+
+    End Sub
+
+    ''' <summary>
+    ''' Initiates exchanging reports. 
+    ''' The application sends a report and requests to read a report.
+    ''' </summary>
+    Private Sub ReadAndWriteToDevice()
+
+        'Report header for the debug display:
+
+        Debug.WriteLine("")
+        Debug.WriteLine("***** HID Test Report *****")
+        Debug.WriteLine(Today & ": " & TimeOfDay)
+
+        Try
+            ' If the device hasn't been detected, was removed, or timed out on a previous attempt
+            ' to access it, look for the device.
+
+            If (myDeviceDetected = False) Then
+                myDeviceDetected = FindTheHid()
+            End If
+
+            If (myDeviceDetected = True) Then
+                ' Get the bytes to send in a report from the combo boxes.
+                ' Increment the values if the autoincrement check box is selected.
+
+                If chkAutoincrement.CheckState = 1 Then
+                    If cboByte0.SelectedIndex < 255 Then
+                        cboByte0.SelectedIndex = cboByte0.SelectedIndex + 1
+                    Else
+                        cboByte0.SelectedIndex = 0
+                    End If
+                    If cboByte1.SelectedIndex < 255 Then
+                        cboByte1.SelectedIndex = cboByte1.SelectedIndex + 1
+                    Else
+                        cboByte1.SelectedIndex = 0
+                    End If
+                End If
+
+                ' An option button selects whether to exchange Input and Output reports
+                ' or Feature reports.
+
+                If (optInputOutput.Checked = True) Then
+                    ExchangeInputAndOutputReports()
+                Else
+                    ExchangeFeatureReports()
+                End If
+
+            End If
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Scroll to the bottom of the list box and trim as needed.
+    ''' </summary>
+    Private Sub ScrollToBottomOfListBox()
+
+        Try
+            Dim count As Int32
+
+            lstResults.SelectedIndex = lstResults.Items.Count - 1
+
+            ' If the list box is getting too large, trim its contents by removing the earliest data.
+
+            If lstResults.Items.Count > 1000 Then
+
+                For count = 1 To 500
+                    lstResults.Items.RemoveAt(4)
+                Next count
+
+            End If
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Set the number of Input buffers (the number of Input reports 
+    ''' the host will store) from the value in the text box.
+    ''' </summary>
+    Private Sub SetInputReportBufferSize()
+
+        Dim numberOfInputBuffers As Int32
+
+        Try
+            ' Get the number of buffers from the text box.
+
+            numberOfInputBuffers = Convert.ToInt32(Val(txtInputReportBufferSize.Text))
+
+            ' Set the number of buffers.
+
+            MyHid.SetNumberOfInputBuffers _
+                (hidHandle, _
+                numberOfInputBuffers)
+
+            ' Verify and display the result.
+
+            GetInputReportBufferSize()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' Perform actions that must execute when the program ends.
+    ''' </summary>
+    Private Sub Shutdown()
+
+        Try
+            ' Close open handles to the device.
+
+            If Not hidHandle Is Nothing Then
+                If Not hidHandle.IsInvalid Then
+                    hidHandle.Close()
+                End If
+            End If
+
+            If Not readHandle Is Nothing Then
+                If Not readHandle.IsInvalid Then
+                    readHandle.Close()
+                End If
+            End If
+
+            If Not writeHandle Is Nothing Then
+                If Not writeHandle.IsInvalid Then
+                    writeHandle.Close()
+                End If
+            End If
+
+            ' Stop receiving notifications.
+
+            MyDeviceManagement.StopReceivingDeviceNotifications(deviceNotificationHandle)
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Perform actions that must execute when the program starts.
+    ''' </summary>
+    Private Sub Startup()
+
+        Try
+            MyHid = New Hid()
+            InitializeDisplay()
+            tmrContinuousDataCollect.Enabled = False
+            tmrContinuousDataCollect.Interval = 1000
+
+            ' Default USB Vendor ID and Product ID:
+
+            txtVendorID.Text = "0925"
+            txtProductID.Text = "7001"
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Exchange data with the device.
+    ''' </summary>
+    ''' 
+    ''' <remarks>
+    ''' The timer is enabled only if cmdContinous has been clicked, 
+    ''' selecting continous (periodic) transfers.
+    ''' </remarks>
+    Private Sub tmrContinuousDataCollect_Tick _
+        (ByVal eventSender As System.Object, _
+        ByVal eventArgs As System.EventArgs) _
+        Handles tmrContinuousDataCollect.Tick
+
+        Try
+            ReadAndWriteToDevice()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' The Product ID has changed in the text box. Call a routine to handle it.
+    ''' </summary>
+    Private Sub txtProductID_TextChanged(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles txtProductID.TextChanged
+
+        Try
+            DeviceHasChanged()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+    End Sub
+
+    ''' <summary>
+    ''' The Vendor ID has changed in the text box. Call a routine to handle it.
+    ''' </summary>
+    Private Sub txtVendorID_TextChanged(ByVal sender As System.Object, ByVal e As System.EventArgs) Handles txtVendorID.TextChanged
+
+        Try
+            DeviceHasChanged()
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Finalize method.
+    ''' </summary>
+    Protected Overrides Sub Finalize()
+        MyBase.Finalize()
+    End Sub
+
+    ''' <summary>
+    '''  Overrides WndProc to enable checking for and handling WM_DEVICECHANGE messages.
+    ''' </summary>
+    ''' 
+    ''' <param name="m"> a Windows Message </param>
+    Protected Overrides Sub WndProc(ByRef m As Message)
+
+        Try
+            ' The OnDeviceChange routine processes WM_DEVICECHANGE messages.
+
+            If m.Msg = WM_DEVICECHANGE Then
+                OnDeviceChange(m)
+            End If
+
+            ' Let the base form process the message.
+
+            MyBase.WndProc(m)
+
+        Catch ex As Exception
+            DisplayException(Me.Name, ex)
+            Throw
+        End Try
+
+    End Sub
+
+    ''' <summary>
+    ''' Provides a central mechanism for exception handling.
+    ''' Displays a message box that describes the exception.
+    ''' </summary>
+    ''' 
+    ''' <param name="moduleName"> the module where the exception occurred. </param>
+    ''' <param name="e"> the exception </param>
+    Shared Sub DisplayException(ByVal moduleName As String, ByVal e As Exception)
+
+        Dim message As String
+        Dim caption As String
+
+        ' Create an error message.
+
+        message = "Exception: " & e.Message & ControlChars.CrLf & _
+        "Module: " & moduleName & ControlChars.CrLf & _
+        "Method: " & e.TargetSite.Name
+
+        caption = "Unexpected Exception"
+
+        MessageBox.Show(message, caption, MessageBoxButtons.OK)
+        Debug.Write(message)
+
+    End Sub
+
+End Class
+
+
