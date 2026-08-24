@@ -110,7 +110,7 @@ Imports System.Runtime.InteropServices
 ''' 
 '''For more information about HIDs and USB, and additional example device firmware to use
 '''with this application, visit Lakeview Research at http://www.Lvr.com .
-'''Send comments, bug reports, etc. to redacted@example.com .
+'''Send comments, bug reports, etc. to jan@Lvr.com .
 '''This application has been tested under Windows XP and Windows Vista.
 ''' </summary>
 
@@ -597,7 +597,7 @@ Friend Class FrmMain
 
         Dim deviceFound As Boolean
         Dim devicePathName(127) As String
-        Dim hidGuid As System.Guid =REDACTED
+        Dim hidGuid As System.Guid = Guid.Empty
         Dim memberIndex As Int32
         Dim myProductID As Int16
         Dim myVendorID As Int16

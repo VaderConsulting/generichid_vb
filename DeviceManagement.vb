@@ -202,7 +202,8 @@ Partial Friend NotInheritable Class DeviceManagement
 
                     Debug.WriteLine("  DeviceInfoSet for device #" & CStr(memberIndex) & ": ")
                     Debug.WriteLine("  cbSize = " & CStr(MyDeviceInterfaceData.cbSize))
-                    Debug.WriteLine("  InterfaceclassGuid = "REDACTED"  Flags = " & Hex(MyDeviceInterfaceData.Flags))
+                    Debug.WriteLine("  InterfaceclassGuid = " & MyDeviceInterfaceData.InterfaceClassGuid.ToString)
+                    Debug.WriteLine("  Flags = " & Hex(MyDeviceInterfaceData.Flags))
 
                     ' ***
                     ' API function: 
@@ -371,7 +372,7 @@ Partial Friend NotInheritable Class DeviceManagement
 
             ' Specify the interface class to receive notifications about.
 
-            DevBroadcastDeviceInterface.dbcc_classguid =REDACTED
+            DevBroadcastDeviceInterface.dbcc_classguid = classGuid
 
             ' Allocate memory for the buffer that holds the DEV_BROADCAST_DEVICEINTERFACE structure.
 
