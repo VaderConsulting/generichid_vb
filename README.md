@@ -21,6 +21,10 @@ VB.NET WinForms GenericHid sample (Jan Axelson 2.4) that finds an attached USB H
 
 Open `GenericHid.sln` in Visual Studio.
 
+## Requirements
+
+- Visual Studio 2005
+
 ## Attribution and provenance
 
 - **Assembly company:** Lakeview Research
