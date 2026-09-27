@@ -27,6 +27,7 @@ Open `GenericHid.sln` in Visual Studio.
 
 ## Attribution and provenance
 
+Working copy from my Historical Dev folder `generichid_vb`.
 - **Assembly company:** Lakeview Research
 - **Assembly copyright:** c. 1999-2005 by Jan Axelson
 
